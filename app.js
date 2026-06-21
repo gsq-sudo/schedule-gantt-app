@@ -9,6 +9,21 @@
   const MS_PER_DAY = 86400000;
   const MIN_DAY_WIDTH = 28;
   const MAX_DAY_WIDTH = 64;
+  const TIMELINE_SCALES = ["day", "week", "month"];
+  const TIMELINE_SCALE_LABELS = {
+    day: "Day",
+    week: "Week",
+    month: "Month"
+  };
+  const TIMELINE_PERIOD_WIDTHS = {
+    week: 76,
+    month: 96
+  };
+  const TIMELINE_EXPORT_SEGMENTS = {
+    day: 28,
+    week: 16,
+    month: 12
+  };
   const ROW_AUTOSCROLL_EDGE = 88;
   const ROW_AUTOSCROLL_MAX_SPEED = 24;
   const EDITOR_PANEL_EDGE_GAP = 16;
@@ -28,6 +43,7 @@
 
   const app = document.getElementById("app");
   let rowAutoScrollFrame = 0;
+  let timelineScrollSyncing = false;
   const editorPanelScroll = {
     offset: 0,
     lastScrollY: window.scrollY || 0,
@@ -66,6 +82,7 @@
       updatedAt: now,
       settings: {
         dayWidth: 38,
+        timelineScale: "day",
         showArchivedOnTimeline: true
       },
       projects: []
@@ -96,6 +113,7 @@
     };
 
     data.settings.dayWidth = clampNumber(Number(data.settings.dayWidth || base.settings.dayWidth), MIN_DAY_WIDTH, MAX_DAY_WIDTH);
+    data.settings.timelineScale = TIMELINE_SCALES.includes(data.settings.timelineScale) ? data.settings.timelineScale : base.settings.timelineScale;
     data.settings.showArchivedOnTimeline = data.settings.showArchivedOnTimeline !== false;
     data.projects = data.projects.map((project, index) => normalizeProject(project, index));
     return data;
@@ -311,6 +329,18 @@
     return new Intl.DateTimeFormat(undefined, { month: "short" }).format(date);
   }
 
+  function formatMonthYear(value) {
+    const date = dateFromInput(value);
+    if (!date) return "";
+    return new Intl.DateTimeFormat(undefined, { month: "short", year: "numeric" }).format(date);
+  }
+
+  function formatYear(value) {
+    const date = dateFromInput(value);
+    if (!date) return "";
+    return new Intl.DateTimeFormat(undefined, { year: "numeric" }).format(date);
+  }
+
   function formatDateTime(value) {
     if (!value) return "Not set";
     const date = new Date(value);
@@ -390,6 +420,23 @@
       ? timelineProjects
       : timelineProjects.filter((project) => (project.owner || "Unassigned") === state.ownerFilter);
     return sortedProjects(projects);
+  }
+
+  function timelineScale() {
+    return TIMELINE_SCALES.includes(state.data.settings.timelineScale) ? state.data.settings.timelineScale : "day";
+  }
+
+  function timelineScaleLabel(scale = timelineScale()) {
+    return TIMELINE_SCALE_LABELS[scale] || TIMELINE_SCALE_LABELS.day;
+  }
+
+  function timelinePeriodWidth(scale = timelineScale()) {
+    if (scale === "day") return state.data.settings.dayWidth;
+    return TIMELINE_PERIOD_WIDTHS[scale] || state.data.settings.dayWidth;
+  }
+
+  function timelineExportSegmentSize(scale = timelineScale()) {
+    return TIMELINE_EXPORT_SEGMENTS[scale] || TIMELINE_EXPORT_SEGMENTS.day;
   }
 
   function getProjectMath(project) {
@@ -527,6 +574,128 @@
     return days;
   }
 
+  function startOfWeek(value) {
+    const date = dateFromInput(value);
+    if (!date) return todayInput();
+    const offset = (date.getDay() + 6) % 7;
+    date.setDate(date.getDate() - offset);
+    return formatDateInput(date);
+  }
+
+  function endOfWeek(value) {
+    return addDays(startOfWeek(value), 6);
+  }
+
+  function startOfMonth(value) {
+    const date = dateFromInput(value);
+    if (!date) return todayInput();
+    date.setDate(1);
+    return formatDateInput(date);
+  }
+
+  function endOfMonth(value) {
+    const date = dateFromInput(value);
+    if (!date) return todayInput();
+    date.setMonth(date.getMonth() + 1, 0);
+    return formatDateInput(date);
+  }
+
+  function addMonths(value, months) {
+    const date = dateFromInput(value);
+    if (!date) return todayInput();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + months);
+    return formatDateInput(date);
+  }
+
+  function makeTimelinePeriod(startDate, endDate, scale) {
+    return {
+      startDate,
+      endDate,
+      scale,
+      days: diffDaysInclusive(startDate, endDate),
+      workDays: workDaysInclusive(startDate, endDate)
+    };
+  }
+
+  function buildTimelinePeriods(startDate, endDate, scale = timelineScale()) {
+    if (scale === "day") {
+      return enumerateDays(startDate, endDate).map((day) => makeTimelinePeriod(day, day, scale));
+    }
+
+    const periods = [];
+    let current = scale === "week" ? startOfWeek(startDate) : startOfMonth(startDate);
+    const hardEnd = scale === "week" ? endOfWeek(endDate) : endOfMonth(endDate);
+    const guardLimit = scale === "week" ? 156 : 60;
+
+    for (let guard = 0; guard < guardLimit && compareDates(current, hardEnd) <= 0; guard += 1) {
+      const periodEnd = scale === "week" ? endOfWeek(current) : endOfMonth(current);
+      periods.push(makeTimelinePeriod(current, periodEnd, scale));
+      current = scale === "week" ? addDays(current, 7) : addMonths(current, 1);
+    }
+    return periods;
+  }
+
+  function formatPeriodPrimary(period) {
+    if (!period) return "";
+    if (period.scale === "day") return String(dateFromInput(period.startDate)?.getDate() || "");
+    if (period.scale === "week") return `${formatShortDate(period.startDate)}-${formatShortDate(period.endDate)}`;
+    return formatMonth(period.startDate);
+  }
+
+  function formatPeriodSecondary(period, index = 0) {
+    if (!period) return "";
+    if (period.scale === "day") {
+      const date = dateFromInput(period.startDate);
+      const showMonth = index === 0 || date.getDate() === 1;
+      return showMonth ? formatMonth(period.startDate) : "";
+    }
+    if (period.scale === "week") {
+      return `Week ${formatYear(period.startDate)}`;
+    }
+    return formatYear(period.startDate);
+  }
+
+  function formatPeriodRange(period) {
+    if (!period) return "";
+    if (period.startDate === period.endDate) return formatLongDate(period.startDate);
+    return `${formatLongDate(period.startDate)} - ${formatLongDate(period.endDate)}`;
+  }
+
+  function periodContainsDate(period, date) {
+    return compareDates(period.startDate, date) <= 0 && compareDates(period.endDate, date) >= 0;
+  }
+
+  function projectOverlapsPeriod(project, period) {
+    return compareDates(project.startDate, period.endDate) <= 0 && compareDates(project.endDate, period.startDate) >= 0;
+  }
+
+  function dateToTimelineOffset(value, periods, periodWidth) {
+    if (!periods.length) return 0;
+    if (compareDates(value, periods[0].startDate) <= 0) return 0;
+
+    for (let index = 0; index < periods.length; index += 1) {
+      const period = periods[index];
+      const afterPeriod = addDays(period.endDate, 1);
+      if (compareDates(value, afterPeriod) >= 0) continue;
+      if (compareDates(value, period.startDate) < 0) return index * periodWidth;
+
+      const daysIntoPeriod = diffDays(period.startDate, value);
+      const offsetWithinPeriod = clampNumber(daysIntoPeriod / Math.max(1, period.days), 0, 1) * periodWidth;
+      return index * periodWidth + offsetWithinPeriod;
+    }
+
+    return periods.length * periodWidth;
+  }
+
+  function timelineDragDays(deltaPixels) {
+    const scale = timelineScale();
+    const periodWidth = timelinePeriodWidth(scale);
+    if (scale === "week") return Math.round((deltaPixels / periodWidth) * 7);
+    if (scale === "month") return Math.round((deltaPixels / periodWidth) * 30);
+    return Math.round(deltaPixels / periodWidth);
+  }
+
   function isWeekend(value) {
     const date = dateFromInput(value);
     if (!date) return false;
@@ -545,6 +714,15 @@
     }, 0);
   }
 
+  function ownerLoadForPeriod(owner, period) {
+    if (period.scale === "day") return ownerLoadForDay(owner, period.startDate);
+
+    const days = enumerateDays(period.startDate, period.endDate).filter((day) => !isWeekend(day));
+    if (!days.length) return 0;
+    const total = days.reduce((sum, day) => sum + ownerLoadForDay(owner, day), 0);
+    return total / days.length;
+  }
+
   function loadClass(value) {
     if (value > 100) return "over";
     if (value >= 85) return "high";
@@ -552,10 +730,10 @@
     return "";
   }
 
-  function getLoadStats(owner, days) {
-    const loads = days.map((day) => ({ day, load: ownerLoadForDay(owner, day) }));
+  function getLoadStats(owner, periods) {
+    const loads = periods.map((period) => ({ period, load: ownerLoadForPeriod(owner, period) }));
     const activeLoads = loads.filter((item) => item.load > 0);
-    const max = loads.reduce((peak, item) => (item.load > peak.load ? item : peak), { day: "", load: 0 });
+    const max = loads.reduce((peak, item) => (item.load > peak.load ? item : peak), { period: null, load: 0 });
     const average = activeLoads.length
       ? activeLoads.reduce((sum, item) => sum + item.load, 0) / activeLoads.length
       : 0;
@@ -567,22 +745,52 @@
   }
 
   function captureTimelineScroll() {
+    const ganttScroll = document.querySelector(".gantt-scroll");
+    const utilizationScroll = document.querySelector(".util-scroll");
     return {
-      gantt: document.querySelector(".gantt-scroll")?.scrollLeft || 0,
-      utilization: document.querySelector(".util-scroll")?.scrollLeft || 0
+      timeline: ganttScroll?.scrollLeft || utilizationScroll?.scrollLeft || 0
     };
+  }
+
+  function boundedScrollLeft(element, scrollLeft) {
+    return Math.min(scrollLeft || 0, Math.max(0, element.scrollWidth - element.clientWidth));
+  }
+
+  function syncTimelineScroll(source) {
+    if (!source) return;
+    const scrollLeft = source.scrollLeft || 0;
+    timelineScrollSyncing = true;
+    [document.querySelector(".gantt-scroll"), document.querySelector(".util-scroll")].forEach((element) => {
+      if (!element || element === source) return;
+      const nextScrollLeft = boundedScrollLeft(element, scrollLeft);
+      if (Math.abs(element.scrollLeft - nextScrollLeft) > 1) {
+        element.scrollLeft = nextScrollLeft;
+      }
+    });
+    window.requestAnimationFrame(() => {
+      timelineScrollSyncing = false;
+    });
   }
 
   function restoreTimelineScroll(scrollPosition) {
     if (!scrollPosition) return;
+    const scrollLeft = scrollPosition.timeline || 0;
     [
-      [".gantt-scroll", scrollPosition.gantt],
-      [".util-scroll", scrollPosition.utilization]
-    ].forEach(([selector, scrollLeft]) => {
+      ".gantt-scroll",
+      ".util-scroll"
+    ].forEach((selector) => {
       const element = document.querySelector(selector);
       if (!element) return;
-      element.scrollLeft = Math.min(scrollLeft || 0, Math.max(0, element.scrollWidth - element.clientWidth));
+      element.scrollLeft = boundedScrollLeft(element, scrollLeft);
     });
+  }
+
+  function handleTimelineScroll(event) {
+    if (timelineScrollSyncing) return;
+    const source = event.target;
+    if (!(source instanceof HTMLElement)) return;
+    if (!source.classList.contains("gantt-scroll") && !source.classList.contains("util-scroll")) return;
+    syncTimelineScroll(source);
   }
 
   function resetEditorPanelStickiness(panel) {
@@ -720,9 +928,10 @@
   function renderGanttView() {
     const visibleProjects = getVisibleProjects();
     const range = getTimelineRange(visibleProjects);
-    const days = enumerateDays(range.startDate, range.endDate);
-    const dayWidth = state.data.settings.dayWidth;
-    const totalWidth = days.length * dayWidth;
+    const scale = timelineScale();
+    const periods = buildTimelinePeriods(range.startDate, range.endDate, scale);
+    const periodWidth = timelinePeriodWidth(scale);
+    const totalWidth = periods.length * periodWidth;
     const selectedProject = projectById(state.selectedProjectId);
     const shiftedInfo = selectedProject ? getDependencyReadyStart(selectedProject) : "";
 
@@ -761,6 +970,7 @@
                 <input id="show-archived-toggle" type="checkbox" ${state.data.settings.showArchivedOnTimeline ? "checked" : ""} />
                 <span>Show completed</span>
               </label>
+              ${renderTimelineScaleControl(scale)}
               <div class="toolbar-group" aria-label="Timeline zoom">
                 <button class="icon-button" data-action="zoom-out" title="Zoom out" aria-label="Zoom out">
                   <i data-lucide="minus"></i>
@@ -770,8 +980,8 @@
                 </button>
               </div>
             </div>
-            ${renderGanttChart(visibleProjects, days, totalWidth, dayWidth)}
-            ${renderUtilization(days, totalWidth, dayWidth)}
+            ${renderGanttChart(visibleProjects, periods, totalWidth, periodWidth, scale)}
+            ${renderUtilization(periods, totalWidth, periodWidth, scale)}
           </section>
         </div>
       </section>
@@ -909,16 +1119,29 @@
     `).join("")}`;
   }
 
-  function renderGanttChart(projects, days, totalWidth, dayWidth) {
-    const rangeStart = days[0] || todayInput();
-    const rows = projects.map((project) => renderGanttRow(project, rangeStart, totalWidth, dayWidth)).join("");
+  function renderTimelineScaleControl(scale) {
+    return `
+      <fieldset class="scale-control" aria-label="Timeline scale">
+        <legend>Scale</legend>
+        ${TIMELINE_SCALES.map((candidate) => `
+          <label>
+            <input type="radio" name="timelineScale" value="${escapeHtml(candidate)}" ${scale === candidate ? "checked" : ""} />
+            <span>${escapeHtml(timelineScaleLabel(candidate))}</span>
+          </label>
+        `).join("")}
+      </fieldset>
+    `;
+  }
+
+  function renderGanttChart(projects, periods, totalWidth, periodWidth, scale) {
+    const rows = projects.map((project) => renderGanttRow(project, periods, totalWidth, periodWidth)).join("");
     return `
       <div class="gantt-scroll" aria-label="Gantt chart">
-        <div class="gantt-table" style="--timeline-width:${totalWidth}px; --day-width:${dayWidth}px;">
+        <div class="gantt-table scale-${escapeHtml(scale)}" style="--timeline-width:${totalWidth}px; --day-width:${periodWidth}px;">
           <div class="gantt-head">
             <div class="gantt-label head-label">Project</div>
             <div class="date-grid" style="width:${totalWidth}px;">
-              ${days.map((day, index) => renderDayHead(day, index)).join("")}
+              ${periods.map((period, index) => renderPeriodHead(period, index)).join("")}
             </div>
           </div>
           <div class="gantt-body">
@@ -929,22 +1152,20 @@
     `;
   }
 
-  function renderDayHead(day, index) {
-    const date = dateFromInput(day);
-    const showMonth = index === 0 || date.getDate() === 1;
+  function renderPeriodHead(period, index) {
     return `
-      <div class="date-cell ${isWeekend(day) ? "weekend" : ""}">
-        <span>${showMonth ? escapeHtml(formatMonth(day)) : ""}</span>
-        <strong>${escapeHtml(date.getDate())}</strong>
+      <div class="date-cell ${escapeHtml(period.scale)}-scale ${period.scale === "day" && isWeekend(period.startDate) ? "weekend" : ""}" title="${escapeHtml(formatPeriodRange(period))}">
+        <span>${escapeHtml(formatPeriodSecondary(period, index))}</span>
+        <strong>${escapeHtml(formatPeriodPrimary(period))}</strong>
       </div>
     `;
   }
 
-  function renderGanttRow(project, rangeStart, totalWidth, dayWidth) {
+  function renderGanttRow(project, periods, totalWidth, periodWidth) {
     const math = getProjectMath(project);
-    const offset = Math.max(0, diffDays(rangeStart, project.startDate));
-    const left = offset * dayWidth;
-    const width = Math.max(20, math.duration * dayWidth - 8);
+    const left = dateToTimelineOffset(project.startDate, periods, periodWidth);
+    const right = dateToTimelineOffset(addDays(project.endDate, 1), periods, periodWidth);
+    const width = Math.max(20, right - left - 8);
     const dependencyNames = project.dependencies.map(projectName).join(", ");
     const selected = state.selectedProjectId === project.id ? "selected" : "";
     const readyStart = getDependencyReadyStart(project);
@@ -1002,22 +1223,22 @@
     `;
   }
 
-  function renderUtilization(days, totalWidth, dayWidth) {
+  function renderUtilization(periods, totalWidth, periodWidth, scale) {
     const activeOwners = state.ownerFilter === "all" ? owners() : [state.ownerFilter];
-    const rows = activeOwners.map((owner) => renderUtilizationRow(owner, days, totalWidth)).join("");
+    const rows = activeOwners.map((owner) => renderUtilizationRow(owner, periods)).join("");
     const title = state.ownerFilter === "all" ? "Owner utilization" : `${state.ownerFilter} utilization`;
-    const stats = state.ownerFilter === "all" ? "" : renderOwnerStats(state.ownerFilter, days);
+    const stats = state.ownerFilter === "all" ? "" : renderOwnerStats(state.ownerFilter, periods);
     return `
       <section class="util-panel">
         <div class="panel-header compact">
           <div>
             <h2 class="panel-title">${escapeHtml(title)}</h2>
-            <p class="panel-subtitle">${escapeHtml(days.length)} calendar days · weekends = 0% · full day = 100%</p>
+            <p class="panel-subtitle">${escapeHtml(periods.length)} ${escapeHtml(timelineScaleLabel(scale).toLowerCase())}${periods.length === 1 ? "" : "s"} · weekends excluded · full day = 100%</p>
           </div>
           ${stats}
         </div>
         <div class="util-scroll">
-          <div class="util-table" style="--timeline-width:${totalWidth}px; --day-width:${dayWidth}px;">
+          <div class="util-table scale-${escapeHtml(scale)}" style="--timeline-width:${totalWidth}px; --day-width:${periodWidth}px;">
             ${rows || `<div class="empty-util">No owner load in this view.</div>`}
           </div>
         </div>
@@ -1025,18 +1246,18 @@
     `;
   }
 
-  function renderOwnerStats(owner, days) {
-    const stats = getLoadStats(owner, days);
+  function renderOwnerStats(owner, periods) {
+    const stats = getLoadStats(owner, periods);
     return `
       <div class="stat-cluster">
         <span>Avg ${escapeHtml(stats.average)}%</span>
-        <span>Peak ${escapeHtml(roundTo(stats.max.load, 1))}%${stats.max.day ? ` ${escapeHtml(formatShortDate(stats.max.day))}` : ""}</span>
+        <span>Peak ${escapeHtml(roundTo(stats.max.load, 1))}%${stats.max.period ? ` ${escapeHtml(formatPeriodPrimary(stats.max.period))}` : ""}</span>
       </div>
     `;
   }
 
-  function renderUtilizationRow(owner, days) {
-    const stats = getLoadStats(owner, days);
+  function renderUtilizationRow(owner, periods) {
+    const stats = getLoadStats(owner, periods);
     return `
       <div class="util-row">
         <div class="util-owner">
@@ -1044,18 +1265,19 @@
           <small>Peak ${escapeHtml(roundTo(stats.max.load, 1))}%</small>
         </div>
         <div class="util-cells">
-          ${stats.loads.map((item) => renderLoadCell(item.day, item.load)).join("")}
+          ${stats.loads.map((item) => renderLoadCell(item.period, item.load)).join("")}
         </div>
       </div>
     `;
   }
 
-  function renderLoadCell(day, load) {
+  function renderLoadCell(period, load) {
     const level = Math.min(100, Math.max(0, load));
+    const weekendOnly = period.scale === "day" && isWeekend(period.startDate);
     return `
       <div
-        class="load-cell ${loadClass(load)} ${isWeekend(day) ? "weekend" : ""}"
-        title="${escapeHtml(formatLongDate(day))}: ${escapeHtml(roundTo(load, 1))}%"
+        class="load-cell ${loadClass(load)} ${escapeHtml(period.scale)}-scale ${weekendOnly ? "weekend" : ""}"
+        title="${escapeHtml(formatPeriodRange(period))}: ${escapeHtml(roundTo(load, 1))}%"
       >
         <span style="height:${level}%"></span>
         <em>${load > 0 ? escapeHtml(roundTo(load, 0)) : ""}</em>
@@ -1138,32 +1360,33 @@
     return project.status === "archived" ? "Archived" : "Active";
   }
 
-  function renderExportGanttSegment(projects, segmentDays, segmentIndex) {
-    const startLabel = formatLongDate(segmentDays[0]);
-    const endLabel = formatLongDate(segmentDays[segmentDays.length - 1]);
+  function renderExportGanttSegment(projects, segmentPeriods, segmentIndex, scale) {
+    const startLabel = formatLongDate(segmentPeriods[0].startDate);
+    const endLabel = formatLongDate(segmentPeriods[segmentPeriods.length - 1].endDate);
     return `
       <section class="export-section">
-        <h2>Gantt Timeline ${escapeHtml(segmentIndex + 1)}: ${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</h2>
-        <table class="export-gantt">
+        <h2>Gantt Timeline ${escapeHtml(segmentIndex + 1)} (${escapeHtml(timelineScaleLabel(scale))}): ${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</h2>
+        <table class="export-gantt scale-${escapeHtml(scale)}">
           <thead>
             <tr>
               <th class="project-col">Project</th>
-              ${segmentDays.map((day) => `
-                <th class="${isWeekend(day) ? "weekend" : ""}">
-                  <span>${escapeHtml(formatShortDate(day))}</span>
+              ${segmentPeriods.map((period, index) => `
+                <th class="${escapeHtml(period.scale)}-scale ${period.scale === "day" && isWeekend(period.startDate) ? "weekend" : ""}" title="${escapeHtml(formatPeriodRange(period))}">
+                  <span>${escapeHtml(formatPeriodSecondary(period, index))}</span>
+                  <strong>${escapeHtml(formatPeriodPrimary(period))}</strong>
                 </th>
               `).join("")}
             </tr>
           </thead>
           <tbody>
-            ${projects.map((project) => renderExportGanttRow(project, segmentDays)).join("")}
+            ${projects.map((project) => renderExportGanttRow(project, segmentPeriods)).join("")}
           </tbody>
         </table>
       </section>
     `;
   }
 
-  function renderExportGanttRow(project, segmentDays) {
+  function renderExportGanttRow(project, segmentPeriods) {
     const math = getProjectMath(project);
     const archived = project.status === "archived";
     return `
@@ -1177,12 +1400,12 @@
             ${escapeHtml(project.owner)} · ${escapeHtml(exportStatusLabel(project))} · ${escapeHtml(math.effortDays)}d · ${escapeHtml(math.dailyPercent)}%/workday
           </div>
         </td>
-        ${segmentDays.map((day) => {
-          const covers = projectCoversDate(project, day);
-          const label = covers && (day === project.startDate || day === segmentDays[0]) ? escapeHtml(project.name) : "";
+        ${segmentPeriods.map((period, index) => {
+          const covers = projectOverlapsPeriod(project, period);
+          const label = covers && (periodContainsDate(period, project.startDate) || index === 0) ? escapeHtml(project.name) : "";
           const colorStyle = covers ? `--project-color:${escapeHtml(project.color)}; border-color:${escapeHtml(project.color)};` : "";
           return `
-            <td class="${covers ? "covered" : ""} ${archived ? "archived-cell" : ""} ${isWeekend(day) ? "weekend" : ""}" style="${colorStyle}">
+            <td class="${covers ? "covered" : ""} ${archived ? "archived-cell" : ""} ${escapeHtml(period.scale)}-scale ${period.scale === "day" && isWeekend(period.startDate) ? "weekend" : ""}" style="${colorStyle}">
               ${covers ? `<span class="export-bar-fill">${label || "&nbsp;"}</span>` : ""}
             </td>
           `;
@@ -1239,8 +1462,9 @@
   function buildPdfReportHtml() {
     const projects = sortedProjects(state.data.projects);
     const range = getTimelineRange(projects);
-    const days = enumerateDays(range.startDate, range.endDate);
-    const daySegments = chunkDays(days, 28);
+    const scale = timelineScale();
+    const periods = buildTimelinePeriods(range.startDate, range.endDate, scale);
+    const periodSegments = chunkDays(periods, timelineExportSegmentSize(scale));
     const generatedAt = new Date();
     const reportTitle = "Schedule Gantt Report";
     const ownerList = owners().join(", ") || "None";
@@ -1293,7 +1517,7 @@
             .subtitle { margin-top: 4px; color: #65737a; font-size: 10px; }
             .summary {
               display: grid;
-              grid-template-columns: repeat(5, 1fr);
+              grid-template-columns: repeat(6, 1fr);
               gap: 8px;
               margin: 14px 0 16px;
             }
@@ -1348,6 +1572,11 @@
               font-size: 8px;
               font-weight: 700;
               text-align: center;
+            }
+            th strong {
+              display: block;
+              color: #172126;
+              font-size: 8px;
             }
             td {
               min-height: 20px;
@@ -1460,10 +1689,11 @@
               <div><span>Active</span><strong>${escapeHtml(activeProjects().length)}</strong></div>
               <div><span>Archived</span><strong>${escapeHtml(archivedProjects().length)}</strong></div>
               <div><span>Owners</span><strong>${escapeHtml(owners().length)}</strong></div>
+              <div><span>Zoom</span><strong>${escapeHtml(timelineScaleLabel(scale))}</strong></div>
               <div><span>Timeline</span><strong>${escapeHtml(formatShortDate(range.startDate))} - ${escapeHtml(formatShortDate(range.endDate))}</strong></div>
             </section>
             <p class="owners"><strong>Owners:</strong> ${escapeHtml(ownerList)}</p>
-            ${projects.length ? daySegments.map((segment, index) => renderExportGanttSegment(projects, segment, index)).join("") : "<p>No projects to export.</p>"}
+            ${projects.length ? periodSegments.map((segment, index) => renderExportGanttSegment(projects, segment, index, scale)).join("") : "<p>No projects to export.</p>"}
             ${renderExportProjectTable(projects)}
           </main>
           <script>
@@ -1629,8 +1859,8 @@
     if (action === "delete-project") deleteSelectedProject();
     if (action === "archive-project") setSelectedProjectStatus("archived");
     if (action === "restore-project") setSelectedProjectStatus("active");
-    if (action === "zoom-in") setDayWidth(state.data.settings.dayWidth + 6);
-    if (action === "zoom-out") setDayWidth(state.data.settings.dayWidth - 6);
+    if (action === "zoom-in") adjustTimelineZoom(1);
+    if (action === "zoom-out") adjustTimelineZoom(-1);
     if (action === "connect-drive") connectDrive({ afterAuth: state.drive.pendingAction || "pull" });
     if (action === "save-drive") saveToDrive({ manual: true });
     if (action === "pull-drive") loadFromDrive({ manual: true });
@@ -1640,6 +1870,19 @@
   function setDayWidth(value) {
     state.data.settings.dayWidth = clampNumber(value, MIN_DAY_WIDTH, MAX_DAY_WIDTH);
     saveLocal();
+  }
+
+  function setTimelineScale(scale) {
+    if (!TIMELINE_SCALES.includes(scale) || scale === timelineScale()) return;
+    state.data.settings.timelineScale = scale;
+    saveLocal();
+  }
+
+  function adjustTimelineZoom(direction) {
+    const zoomOrder = ["month", "week", "day"];
+    const currentIndex = zoomOrder.indexOf(timelineScale());
+    const nextIndex = clampNumber(currentIndex + direction, 0, zoomOrder.length - 1);
+    setTimelineScale(zoomOrder[nextIndex]);
   }
 
   function deleteSelectedProject() {
@@ -1680,6 +1923,11 @@
       state.data.settings.showArchivedOnTimeline = event.target.checked;
       saveLocal();
       showToast(event.target.checked ? "Completed projects shown." : "Completed projects hidden from timeline.");
+      return;
+    }
+
+    if (event.target.name === "timelineScale") {
+      setTimelineScale(event.target.value);
       return;
     }
 
@@ -1858,8 +2106,7 @@
     }
 
     if (!state.drag) return;
-    const dayWidth = state.data.settings.dayWidth;
-    const deltaDays = Math.round((event.clientX - state.drag.startX) / dayWidth);
+    const deltaDays = timelineDragDays(event.clientX - state.drag.startX);
     if (deltaDays === state.drag.lastDeltaDays) return;
 
     const project = projectById(state.drag.projectId);
@@ -2217,6 +2464,7 @@
   app.addEventListener("change", handleChange);
   app.addEventListener("input", handleInput);
   app.addEventListener("pointerdown", handlePointerDown);
+  app.addEventListener("scroll", handleTimelineScroll, true);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
   window.addEventListener("pointercancel", handlePointerCancel);

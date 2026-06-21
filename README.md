@@ -32,11 +32,13 @@ Schedule data is stored in one JSON file named `schedule-gantt-data.json` in the
 - Project bars can be recolored from an Office-style color palette.
 - New projects default into the timeline group for their assigned owner when that owner already has timeline rows.
 - Projects can be reordered on the Gantt timeline by dragging the grip handle in the row label; the page auto-scrolls near the top and bottom edges during reorder.
+- The Gantt timeline can be viewed by day, week, or month; drag and resize still update the underlying project dates.
+- The Gantt timeline and utilization rows keep their horizontal scroll positions and date columns aligned.
 - Completing a project archives it; archived projects remain visible on the timeline with distinct styling and can be restored.
 - The Gantt toolbar can hide completed projects from the timeline while keeping them in the Projects list.
 - Weekends are visible on the timeline but do not count as workdays or utilization.
 - Utilization above 100% is shown in red.
-- The PDF export button opens a print-ready report with segmented Gantt pages and the full project list; choose "Save as PDF" in the print dialog to download it.
+- The PDF export button opens a print-ready report using the current day/week/month timeline zoom, with segmented Gantt pages and the full project list; choose "Save as PDF" in the print dialog to download it.
 
 ## Files
 

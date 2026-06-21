@@ -539,6 +539,56 @@ svg {
   gap: 7px;
 }
 
+.scale-control {
+  display: inline-grid;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 3px;
+  min-height: 40px;
+  margin: 0;
+  padding: 3px;
+  background: #f7faf9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.scale-control legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.scale-control label {
+  display: grid;
+  cursor: pointer;
+}
+
+.scale-control input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.scale-control span {
+  display: grid;
+  min-width: 54px;
+  min-height: 32px;
+  padding: 0 10px;
+  place-items: center;
+  color: #435056;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.scale-control input:checked + span {
+  color: #ffffff;
+  background: var(--accent);
+}
+
 .gantt-scroll,
 .util-scroll,
 .table-wrap {
@@ -611,6 +661,18 @@ svg {
 
 .date-cell strong {
   font-size: 0.78rem;
+  text-align: center;
+  white-space: normal;
+}
+
+.date-cell.week-scale strong {
+  padding: 0 3px;
+  font-size: 0.66rem;
+  line-height: 1.15;
+}
+
+.date-cell.month-scale strong {
+  font-size: 0.82rem;
 }
 
 .gantt-body {
@@ -827,7 +889,7 @@ svg {
 }
 
 .util-panel {
-  margin: 14px;
+  margin: 14px 0;
   overflow: hidden;
 }
 
@@ -849,11 +911,11 @@ svg {
 }
 
 .util-table {
-  min-width: calc(160px + var(--timeline-width));
+  min-width: calc(240px + var(--timeline-width));
 }
 
 .util-row {
-  grid-template-columns: 160px var(--timeline-width);
+  grid-template-columns: 240px var(--timeline-width);
   min-height: 50px;
   border-top: 1px solid var(--line);
 }
@@ -1082,10 +1144,10 @@ tbody tr.archived-row {
   }
 
   .util-row {
-    grid-template-columns: 130px var(--timeline-width);
+    grid-template-columns: 190px var(--timeline-width);
   }
 
   .util-table {
-    min-width: calc(130px + var(--timeline-width));
+    min-width: calc(190px + var(--timeline-width));
   }
 }
