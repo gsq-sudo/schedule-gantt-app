@@ -30,6 +30,7 @@ Schedule data is stored in one JSON file named `schedule-gantt-data.json` in the
 ## Schedule Behavior
 
 - Project bars can be recolored from an Office-style color palette.
+- Projects can be reordered on the Gantt timeline by dragging the grip handle in the row label.
 - Completing a project archives it; archived projects remain visible on the timeline with distinct styling and can be restored.
 - The Gantt toolbar can hide completed projects from the timeline while keeping them in the Projects list.
 - Weekends are visible on the timeline but do not count as workdays or utilization.

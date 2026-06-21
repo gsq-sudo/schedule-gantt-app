@@ -30,6 +30,7 @@
     ownerFilter: "all",
     selectedProjectId: "",
     drag: null,
+    rowDrag: null,
     drive: {
       accessToken: "",
       tokenExpiresAt: 0,
@@ -118,6 +119,7 @@
       color: normalizeColor(project && project.color, index),
       status: project && project.status === "archived" ? "archived" : "active",
       completedAt: (project && project.completedAt) || "",
+      order: Number.isFinite(Number(project && project.order)) ? Number(project.order) : index,
       createdAt: (project && project.createdAt) || new Date().toISOString(),
       updatedAt: (project && project.updatedAt) || new Date().toISOString()
     };
@@ -324,10 +326,20 @@
 
   function sortedProjects(projects = state.data.projects) {
     return [...projects].sort((a, b) => {
-      const dateSort = compareDates(a.startDate, b.startDate);
-      if (dateSort !== 0) return dateSort;
+      const orderSort = Number(a.order || 0) - Number(b.order || 0);
+      if (orderSort !== 0) return orderSort;
       return a.name.localeCompare(b.name);
     });
+  }
+
+  function normalizeProjectOrder(projects = state.data.projects) {
+    sortedProjects(projects).forEach((project, index) => {
+      project.order = index;
+    });
+  }
+
+  function nextProjectOrder() {
+    return state.data.projects.reduce((max, project) => Math.max(max, Number(project.order || 0)), -1) + 1;
   }
 
   function owners() {
@@ -833,16 +845,24 @@
     const readyStart = getDependencyReadyStart(project);
     const blocked = readyStart && compareDates(project.startDate, readyStart) < 0;
     const archived = project.status === "archived";
+    const reorderTarget = state.rowDrag && state.rowDrag.beforeId === project.id ? "reorder-target" : "";
+    const reorderDragging = state.rowDrag && state.rowDrag.projectId === project.id ? "reordering" : "";
 
     return `
-      <div class="gantt-row ${selected} ${archived ? "archived" : ""}" data-row-id="${escapeHtml(project.id)}">
-        <button class="gantt-label row-label" data-select-project="${escapeHtml(project.id)}">
+      <div class="gantt-row ${selected} ${archived ? "archived" : ""} ${reorderTarget} ${reorderDragging}" data-row-id="${escapeHtml(project.id)}">
+        <div class="gantt-label row-label">
+          <button class="row-drag-handle" data-row-drag="${escapeHtml(project.id)}" title="Reorder project" aria-label="Reorder project">
+            <i data-lucide="grip-vertical"></i>
+            <span class="grip-dots" aria-hidden="true">⋮</span>
+          </button>
+          <button class="row-select" data-select-project="${escapeHtml(project.id)}">
           <span class="color-dot" style="background:${escapeHtml(project.color)}"></span>
           <span class="row-main">
             <strong>${escapeHtml(project.name)}</strong>
             <small>${escapeHtml(project.owner)} · ${escapeHtml(math.dailyPercent)}%/workday ${archived ? "· archived" : ""}</small>
           </span>
-        </button>
+          </button>
+        </div>
         <div class="row-track" style="width:${totalWidth}px;">
           <div
             class="gantt-bar ${selected} ${blocked ? "blocked" : ""} ${archived ? "archived" : ""}"
@@ -1102,6 +1122,7 @@
       project.createdAt = new Date().toISOString();
       project.status = "active";
       project.completedAt = "";
+      project.order = nextProjectOrder();
       state.data.projects.push(project);
     }
 
@@ -1166,6 +1187,7 @@
         ...candidate,
         dependencies: candidate.dependencies.filter((dependencyId) => dependencyId !== project.id)
       }));
+    normalizeProjectOrder();
     state.selectedProjectId = "";
     saveLocal();
     showToast("Project deleted.");
@@ -1238,7 +1260,54 @@
     output.textContent = `${duration} calendar days · ${workDays} workdays · ${roundTo(effortDays, 2)} effort days · ${dailyPercent}% per workday`;
   }
 
+  function getRowDropBeforeId(clientY) {
+    const rows = [...document.querySelectorAll(".gantt-row[data-row-id]")];
+    for (const row of rows) {
+      const bounds = row.getBoundingClientRect();
+      if (clientY < bounds.top + bounds.height / 2) return row.dataset.rowId || "";
+    }
+    return "";
+  }
+
+  function reorderProjectBefore(projectId, beforeId) {
+    if (beforeId === projectId) return false;
+    const orderedIds = sortedProjects(state.data.projects).map((project) => project.id);
+    const currentIndex = orderedIds.indexOf(projectId);
+    if (currentIndex < 0) return false;
+
+    orderedIds.splice(currentIndex, 1);
+    const insertIndex = beforeId && beforeId !== projectId ? orderedIds.indexOf(beforeId) : orderedIds.length;
+    orderedIds.splice(insertIndex < 0 ? orderedIds.length : insertIndex, 0, projectId);
+
+    const byId = new Map(state.data.projects.map((project) => [project.id, project]));
+    orderedIds.forEach((id, index) => {
+      const project = byId.get(id);
+      if (project) {
+        project.order = index;
+        project.updatedAt = new Date().toISOString();
+      }
+    });
+    return true;
+  }
+
   function handlePointerDown(event) {
+    const rowDragTarget = event.target.closest("[data-row-drag]");
+    if (rowDragTarget) {
+      const project = projectById(rowDragTarget.dataset.rowDrag);
+      if (!project) return;
+      event.preventDefault();
+      state.selectedProjectId = project.id;
+      state.rowDrag = {
+        projectId: project.id,
+        startY: event.clientY,
+        beforeId: project.id,
+        moved: false
+      };
+      document.body.classList.add("row-dragging");
+      render();
+      return;
+    }
+
     const dragTarget = event.target.closest("[data-drag-mode]");
     if (!dragTarget) return;
     const bar = dragTarget.closest(".gantt-bar");
@@ -1262,6 +1331,17 @@
   }
 
   function handlePointerMove(event) {
+    if (state.rowDrag) {
+      const beforeId = getRowDropBeforeId(event.clientY);
+      const moved = Math.abs(event.clientY - state.rowDrag.startY) > 3;
+      if (beforeId !== state.rowDrag.beforeId || moved !== state.rowDrag.moved) {
+        state.rowDrag.beforeId = beforeId;
+        state.rowDrag.moved = moved;
+        render();
+      }
+      return;
+    }
+
     if (!state.drag) return;
     const dayWidth = state.data.settings.dayWidth;
     const deltaDays = Math.round((event.clientX - state.drag.startX) / dayWidth);
@@ -1293,6 +1373,19 @@
   }
 
   function handlePointerUp() {
+    if (state.rowDrag) {
+      const { projectId, beforeId, moved } = state.rowDrag;
+      state.rowDrag = null;
+      document.body.classList.remove("row-dragging");
+      if (moved && reorderProjectBefore(projectId, beforeId)) {
+        saveLocal();
+        showToast("Project order updated.");
+      } else {
+        render();
+      }
+      return;
+    }
+
     if (!state.drag) return;
     const moved = state.drag.moved;
     state.drag = null;
