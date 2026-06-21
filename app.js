@@ -1180,9 +1180,10 @@
         ${segmentDays.map((day) => {
           const covers = projectCoversDate(project, day);
           const label = covers && (day === project.startDate || day === segmentDays[0]) ? escapeHtml(project.name) : "";
+          const colorStyle = covers ? `--project-color:${escapeHtml(project.color)}; border-color:${escapeHtml(project.color)};` : "";
           return `
-            <td class="${covers ? "covered" : ""} ${archived ? "archived-cell" : ""} ${isWeekend(day) ? "weekend" : ""}" style="${covers ? `--project-color:${escapeHtml(project.color)};` : ""}">
-              ${label ? `<span>${label}</span>` : ""}
+            <td class="${covers ? "covered" : ""} ${archived ? "archived-cell" : ""} ${isWeekend(day) ? "weekend" : ""}" style="${colorStyle}">
+              ${covers ? `<span class="export-bar-fill">${label || "&nbsp;"}</span>` : ""}
             </td>
           `;
         }).join("")}
@@ -1214,9 +1215,8 @@
               const math = getProjectMath(project);
               return `
                 <tr class="${project.status === "archived" ? "archived" : ""}">
-                  <td>
-                    <span class="export-color" style="background:${escapeHtml(project.color)}"></span>
-                    ${escapeHtml(project.name)}
+                  <td class="export-project-title-cell" style="--project-color:${escapeHtml(project.color)};">
+                    <span class="export-project-list-name">${escapeHtml(project.name)}</span>
                   </td>
                   <td>${escapeHtml(project.owner)}</td>
                   <td>${escapeHtml(exportStatusLabel(project))}</td>
@@ -1252,7 +1252,11 @@
           <title>${escapeHtml(reportTitle)}</title>
           <style>
             @page { size: landscape; margin: 0.35in; }
-            * { box-sizing: border-box; }
+            * {
+              box-sizing: border-box;
+              print-color-adjust: exact;
+              -webkit-print-color-adjust: exact;
+            }
             body {
               margin: 0;
               color: #172126;
@@ -1363,21 +1367,32 @@
             }
             .export-gantt td.covered {
               color: #ffffff;
-              background: var(--project-color);
+              background: transparent;
+              border-color: var(--project-color);
             }
-            .export-gantt td.covered span {
+            .export-gantt .export-bar-fill {
               display: block;
-              padding: 0 2px;
+              min-height: 18px;
+              margin: 2px 1px;
+              padding: 2px 3px;
+              border: 1px solid var(--project-color);
+              border-radius: 3px;
+              background: var(--project-color);
+              box-shadow: inset 0 0 0 999px var(--project-color);
               overflow: hidden;
               font-size: 7px;
               font-weight: 700;
+              line-height: 1.3;
               text-overflow: ellipsis;
               white-space: nowrap;
             }
             .export-gantt td.archived-cell {
               color: #ffffff;
-              background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,0.28) 0 4px, rgba(255,255,255,0) 4px 8px);
               opacity: 0.72;
+            }
+            .export-gantt td.archived-cell .export-bar-fill {
+              border-style: dashed;
+              background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,0.28) 0 4px, rgba(255,255,255,0) 4px 8px);
             }
             .weekend {
               background-color: #f3f4f6;
@@ -1390,6 +1405,13 @@
             }
             .export-projects th:nth-child(1) { width: 18%; }
             .export-projects th:nth-child(10) { width: 18%; }
+            .export-project-title-cell {
+              box-shadow: inset 3px 0 0 var(--project-color);
+            }
+            .export-project-list-name {
+              display: block;
+              overflow-wrap: anywhere;
+            }
             tr.archived {
               color: #66727a;
             }
