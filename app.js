@@ -351,6 +351,25 @@
     return state.data.projects.reduce((max, project) => Math.max(max, Number(project.order || 0)), -1) + 1;
   }
 
+  function insertNewProjectInOwnerGroup(project) {
+    const orderedProjects = sortedProjects(state.data.projects);
+    const visibleOnTimeline = (candidate) => state.data.settings.showArchivedOnTimeline || candidate.status !== "archived";
+    const owner = project.owner || "Unassigned";
+    let insertIndex = orderedProjects.length;
+
+    orderedProjects.forEach((candidate, index) => {
+      if ((candidate.owner || "Unassigned") === owner && visibleOnTimeline(candidate)) {
+        insertIndex = index + 1;
+      }
+    });
+
+    orderedProjects.splice(insertIndex, 0, project);
+    orderedProjects.forEach((candidate, index) => {
+      candidate.order = index;
+    });
+    state.data.projects.push(project);
+  }
+
   function owners() {
     return [...new Set(state.data.projects.map((project) => project.owner || "Unassigned"))].sort((a, b) => a.localeCompare(b));
   }
@@ -641,6 +660,10 @@
           <button class="button icon-text" data-action="pull-drive" title="Pull from Drive">
             <i data-lucide="download-cloud"></i>
             <span>Pull</span>
+          </button>
+          <button class="button icon-text" data-action="export-pdf" title="Download PDF report">
+            <i data-lucide="file-down"></i>
+            <span>PDF</span>
           </button>
         </div>
       </header>
@@ -1103,6 +1126,323 @@
     `;
   }
 
+  function chunkDays(days, size = 28) {
+    const chunks = [];
+    for (let index = 0; index < days.length; index += size) {
+      chunks.push(days.slice(index, index + size));
+    }
+    return chunks;
+  }
+
+  function exportStatusLabel(project) {
+    return project.status === "archived" ? "Archived" : "Active";
+  }
+
+  function renderExportGanttSegment(projects, segmentDays, segmentIndex) {
+    const startLabel = formatLongDate(segmentDays[0]);
+    const endLabel = formatLongDate(segmentDays[segmentDays.length - 1]);
+    return `
+      <section class="export-section">
+        <h2>Gantt Timeline ${escapeHtml(segmentIndex + 1)}: ${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</h2>
+        <table class="export-gantt">
+          <thead>
+            <tr>
+              <th class="project-col">Project</th>
+              ${segmentDays.map((day) => `
+                <th class="${isWeekend(day) ? "weekend" : ""}">
+                  <span>${escapeHtml(formatShortDate(day))}</span>
+                </th>
+              `).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${projects.map((project) => renderExportGanttRow(project, segmentDays)).join("")}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function renderExportGanttRow(project, segmentDays) {
+    const math = getProjectMath(project);
+    const archived = project.status === "archived";
+    return `
+      <tr class="${archived ? "archived" : ""}">
+        <td class="project-col">
+          <div class="export-project-name">
+            <span class="export-color" style="background:${escapeHtml(project.color)}"></span>
+            <strong>${escapeHtml(project.name)}</strong>
+          </div>
+          <div class="export-project-meta">
+            ${escapeHtml(project.owner)} · ${escapeHtml(exportStatusLabel(project))} · ${escapeHtml(math.effortDays)}d · ${escapeHtml(math.dailyPercent)}%/workday
+          </div>
+        </td>
+        ${segmentDays.map((day) => {
+          const covers = projectCoversDate(project, day);
+          const label = covers && (day === project.startDate || day === segmentDays[0]) ? escapeHtml(project.name) : "";
+          return `
+            <td class="${covers ? "covered" : ""} ${archived ? "archived-cell" : ""} ${isWeekend(day) ? "weekend" : ""}" style="${covers ? `--project-color:${escapeHtml(project.color)};` : ""}">
+              ${label ? `<span>${label}</span>` : ""}
+            </td>
+          `;
+        }).join("")}
+      </tr>
+    `;
+  }
+
+  function renderExportProjectTable(projects) {
+    return `
+      <section class="export-section project-list-section">
+        <h2>Projects List</h2>
+        <table class="export-projects">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Owner</th>
+              <th>Status</th>
+              <th>Start</th>
+              <th>End</th>
+              <th>Workdays</th>
+              <th>Effort</th>
+              <th>Daily</th>
+              <th>Dependencies</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${projects.map((project) => {
+              const math = getProjectMath(project);
+              return `
+                <tr class="${project.status === "archived" ? "archived" : ""}">
+                  <td>
+                    <span class="export-color" style="background:${escapeHtml(project.color)}"></span>
+                    ${escapeHtml(project.name)}
+                  </td>
+                  <td>${escapeHtml(project.owner)}</td>
+                  <td>${escapeHtml(exportStatusLabel(project))}</td>
+                  <td>${escapeHtml(formatLongDate(project.startDate))}</td>
+                  <td>${escapeHtml(formatLongDate(project.endDate))}</td>
+                  <td>${escapeHtml(math.workDays)}</td>
+                  <td>${escapeHtml(math.effortDays)}d</td>
+                  <td>${escapeHtml(math.dailyPercent)}%</td>
+                  <td>${escapeHtml(project.dependencies.map(projectName).join(", ") || "None")}</td>
+                  <td>${escapeHtml(project.notes || "")}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function buildPdfReportHtml() {
+    const projects = sortedProjects(state.data.projects);
+    const range = getTimelineRange(projects);
+    const days = enumerateDays(range.startDate, range.endDate);
+    const daySegments = chunkDays(days, 28);
+    const generatedAt = new Date();
+    const reportTitle = "Schedule Gantt Report";
+    const ownerList = owners().join(", ") || "None";
+
+    return `<!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8" />
+          <title>${escapeHtml(reportTitle)}</title>
+          <style>
+            @page { size: landscape; margin: 0.35in; }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              color: #172126;
+              font-family: Arial, Helvetica, sans-serif;
+              font-size: 10px;
+              line-height: 1.3;
+            }
+            .no-print {
+              position: sticky;
+              top: 0;
+              z-index: 10;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              padding: 10px 14px;
+              background: #ffffff;
+              border-bottom: 1px solid #d9e1df;
+            }
+            .no-print button {
+              min-height: 34px;
+              padding: 0 12px;
+              border: 1px solid #0f766e;
+              border-radius: 6px;
+              color: white;
+              background: #0f766e;
+              font-weight: 700;
+              cursor: pointer;
+            }
+            .report { padding: 18px; }
+            h1, h2 { margin: 0; }
+            h1 { font-size: 22px; }
+            h2 { margin-bottom: 8px; font-size: 14px; }
+            .subtitle { margin-top: 4px; color: #65737a; font-size: 10px; }
+            .summary {
+              display: grid;
+              grid-template-columns: repeat(5, 1fr);
+              gap: 8px;
+              margin: 14px 0 16px;
+            }
+            .summary div {
+              padding: 8px;
+              border: 1px solid #d9e1df;
+              border-radius: 6px;
+              background: #f7faf9;
+            }
+            .summary span { display: block; color: #65737a; font-size: 9px; font-weight: 700; }
+            .summary strong { display: block; margin-top: 3px; font-size: 12px; }
+            .owners { margin: -6px 0 14px; color: #435056; }
+            .export-section {
+              page-break-inside: avoid;
+              break-inside: avoid;
+              margin: 0 0 16px;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: fixed;
+            }
+            th, td {
+              border: 1px solid #d9e1df;
+              vertical-align: middle;
+            }
+            th {
+              padding: 4px 3px;
+              color: #435056;
+              background: #eef3f2;
+              font-size: 8px;
+              font-weight: 700;
+              text-align: center;
+            }
+            td {
+              min-height: 20px;
+              padding: 3px;
+            }
+            .project-col {
+              width: 190px;
+              text-align: left;
+            }
+            .export-project-name {
+              display: flex;
+              align-items: center;
+              gap: 5px;
+              min-width: 0;
+            }
+            .export-project-name strong {
+              overflow-wrap: anywhere;
+              font-size: 10px;
+            }
+            .export-project-meta {
+              margin-top: 2px;
+              color: #65737a;
+              font-size: 8px;
+            }
+            .export-color {
+              display: inline-block;
+              width: 8px;
+              height: 8px;
+              margin-right: 4px;
+              border-radius: 999px;
+              vertical-align: middle;
+            }
+            .export-gantt td:not(.project-col) {
+              height: 24px;
+              padding: 0;
+              text-align: center;
+              overflow: hidden;
+            }
+            .export-gantt td.covered {
+              color: #ffffff;
+              background: var(--project-color);
+            }
+            .export-gantt td.covered span {
+              display: block;
+              padding: 0 2px;
+              overflow: hidden;
+              font-size: 7px;
+              font-weight: 700;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            .export-gantt td.archived-cell {
+              color: #ffffff;
+              background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,0.28) 0 4px, rgba(255,255,255,0) 4px 8px);
+              opacity: 0.72;
+            }
+            .weekend {
+              background-color: #f3f4f6;
+            }
+            .export-projects th,
+            .export-projects td {
+              padding: 5px;
+              text-align: left;
+              overflow-wrap: anywhere;
+            }
+            .export-projects th:nth-child(1) { width: 18%; }
+            .export-projects th:nth-child(10) { width: 18%; }
+            tr.archived {
+              color: #66727a;
+            }
+            @media print {
+              .no-print { display: none; }
+              .report { padding: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="no-print">
+            <div>
+              <strong>${escapeHtml(reportTitle)}</strong>
+              <div class="subtitle">Use the print dialog destination "Save as PDF" to download the file.</div>
+            </div>
+            <button onclick="window.print()">Print / Save PDF</button>
+          </div>
+          <main class="report">
+            <header>
+              <h1>${escapeHtml(reportTitle)}</h1>
+              <div class="subtitle">Generated ${escapeHtml(formatDateTime(generatedAt.toISOString()))}</div>
+            </header>
+            <section class="summary">
+              <div><span>Projects</span><strong>${escapeHtml(projects.length)}</strong></div>
+              <div><span>Active</span><strong>${escapeHtml(activeProjects().length)}</strong></div>
+              <div><span>Archived</span><strong>${escapeHtml(archivedProjects().length)}</strong></div>
+              <div><span>Owners</span><strong>${escapeHtml(owners().length)}</strong></div>
+              <div><span>Timeline</span><strong>${escapeHtml(formatShortDate(range.startDate))} - ${escapeHtml(formatShortDate(range.endDate))}</strong></div>
+            </section>
+            <p class="owners"><strong>Owners:</strong> ${escapeHtml(ownerList)}</p>
+            ${projects.length ? daySegments.map((segment, index) => renderExportGanttSegment(projects, segment, index)).join("") : "<p>No projects to export.</p>"}
+            ${renderExportProjectTable(projects)}
+          </main>
+          <script>
+            window.addEventListener("load", () => {
+              window.setTimeout(() => window.print(), 350);
+            });
+          </script>
+        </body>
+      </html>`;
+  }
+
+  function exportPdfReport() {
+    const reportWindow = window.open("", "_blank", "width=1200,height=800");
+    if (!reportWindow) {
+      showToast("Allow popups to export the PDF report.");
+      return;
+    }
+    reportWindow.document.open();
+    reportWindow.document.write(buildPdfReportHtml());
+    reportWindow.document.close();
+  }
+
   function renderSettingsView() {
     return `
       <section class="view active">
@@ -1205,7 +1545,7 @@
       project.status = "active";
       project.completedAt = "";
       project.order = nextProjectOrder();
-      state.data.projects.push(project);
+      insertNewProjectInOwnerGroup(project);
     }
 
     const shifted = applyDependencyCascade();
@@ -1251,6 +1591,7 @@
     if (action === "connect-drive") connectDrive({ afterAuth: state.drive.pendingAction || "pull" });
     if (action === "save-drive") saveToDrive({ manual: true });
     if (action === "pull-drive") loadFromDrive({ manual: true });
+    if (action === "export-pdf") exportPdfReport();
   }
 
   function setDayWidth(value) {
