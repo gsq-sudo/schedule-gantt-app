@@ -1307,18 +1307,39 @@
             .summary strong { display: block; margin-top: 3px; font-size: 12px; }
             .owners { margin: -6px 0 14px; color: #435056; }
             .export-section {
-              page-break-inside: avoid;
-              break-inside: avoid;
+              page-break-inside: auto;
+              break-inside: auto;
               margin: 0 0 16px;
+            }
+            .export-section h2 {
+              page-break-after: avoid;
+              break-after: avoid-page;
             }
             table {
               width: 100%;
               border-collapse: collapse;
               table-layout: fixed;
+              page-break-inside: auto;
+              break-inside: auto;
+            }
+            thead {
+              display: table-header-group;
+            }
+            tbody {
+              display: table-row-group;
+            }
+            tr {
+              page-break-inside: avoid;
+              break-inside: avoid;
+              break-inside: avoid-page;
+              page-break-after: auto;
             }
             th, td {
               border: 1px solid #d9e1df;
               vertical-align: middle;
+              page-break-inside: avoid;
+              break-inside: avoid;
+              break-inside: avoid-page;
             }
             th {
               padding: 4px 3px;
