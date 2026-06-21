@@ -195,6 +195,12 @@ svg {
   align-items: start;
 }
 
+.editor-panel {
+  position: relative;
+  align-self: start;
+  will-change: transform;
+}
+
 .panel-header {
   display: flex;
   align-items: center;

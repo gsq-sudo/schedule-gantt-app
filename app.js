@@ -11,6 +11,7 @@
   const MAX_DAY_WIDTH = 64;
   const ROW_AUTOSCROLL_EDGE = 88;
   const ROW_AUTOSCROLL_MAX_SPEED = 24;
+  const EDITOR_PANEL_EDGE_GAP = 16;
   const OFFICE_COLOR_PALETTE = [
     { name: "Blue", colors: ["#deebf7", "#9dc3e6", "#5b9bd5", "#2f75b5", "#1f4e79"] },
     { name: "Orange", colors: ["#fce4d6", "#f8cbad", "#ed7d31", "#c55a11", "#843c0c"] },
@@ -27,6 +28,11 @@
 
   const app = document.getElementById("app");
   let rowAutoScrollFrame = 0;
+  const editorPanelScroll = {
+    offset: 0,
+    lastScrollY: window.scrollY || 0,
+    ticking: false
+  };
 
   const state = {
     activeTab: "gantt",
@@ -560,6 +566,57 @@
     });
   }
 
+  function resetEditorPanelStickiness(panel) {
+    if (panel) panel.style.transform = "";
+    editorPanelScroll.offset = 0;
+    editorPanelScroll.lastScrollY = window.scrollY || 0;
+  }
+
+  function updateEditorPanelStickiness() {
+    const panel = document.querySelector(".editor-panel");
+    const workbench = document.querySelector(".workbench");
+    if (!panel || !workbench || state.activeTab !== "gantt" || window.matchMedia("(max-width: 1080px)").matches) {
+      resetEditorPanelStickiness(panel);
+      return;
+    }
+
+    const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const workbenchRect = workbench.getBoundingClientRect();
+    const workbenchTop = scrollY + workbenchRect.top;
+    const panelHeight = panel.offsetHeight;
+    const workbenchHeight = workbench.offsetHeight;
+    const maxOffset = Math.max(0, workbenchHeight - panelHeight);
+    const topbarHeight = document.querySelector(".topbar")?.offsetHeight || 70;
+    const topGap = topbarHeight + EDITOR_PANEL_EDGE_GAP;
+    const bottomGap = EDITOR_PANEL_EDGE_GAP;
+    let nextOffset = editorPanelScroll.offset;
+
+    if (panelHeight + topGap + bottomGap <= viewportHeight) {
+      nextOffset = scrollY + topGap - workbenchTop;
+    } else if (scrollY >= editorPanelScroll.lastScrollY) {
+      const bottomAlignedOffset = scrollY + viewportHeight - bottomGap - panelHeight - workbenchTop;
+      if (bottomAlignedOffset > nextOffset) nextOffset = bottomAlignedOffset;
+    } else {
+      const topAlignedOffset = scrollY + topGap - workbenchTop;
+      if (topAlignedOffset < nextOffset) nextOffset = topAlignedOffset;
+    }
+
+    nextOffset = clampNumber(nextOffset, 0, maxOffset);
+    editorPanelScroll.offset = nextOffset;
+    editorPanelScroll.lastScrollY = scrollY;
+    panel.style.transform = nextOffset ? `translateY(${Math.round(nextOffset)}px)` : "";
+  }
+
+  function scheduleEditorPanelStickinessUpdate() {
+    if (editorPanelScroll.ticking) return;
+    editorPanelScroll.ticking = true;
+    window.requestAnimationFrame(() => {
+      editorPanelScroll.ticking = false;
+      updateEditorPanelStickiness();
+    });
+  }
+
   function render() {
     const timelineScroll = captureTimelineScroll();
     app.innerHTML = `
@@ -603,6 +660,7 @@
     refreshIcons();
     updateFormMath(document.getElementById("project-form"));
     restoreTimelineScroll(timelineScroll);
+    updateEditorPanelStickiness();
   }
 
   function refreshIcons() {
@@ -1778,6 +1836,11 @@
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
   window.addEventListener("pointercancel", handlePointerCancel);
+  window.addEventListener("scroll", scheduleEditorPanelStickinessUpdate, { passive: true });
+  window.addEventListener("resize", () => {
+    editorPanelScroll.lastScrollY = window.scrollY || 0;
+    scheduleEditorPanelStickinessUpdate();
+  });
 
   render();
 })();
