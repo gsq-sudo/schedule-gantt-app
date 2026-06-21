@@ -9,6 +9,8 @@
   const MS_PER_DAY = 86400000;
   const MIN_DAY_WIDTH = 28;
   const MAX_DAY_WIDTH = 64;
+  const ROW_AUTOSCROLL_EDGE = 88;
+  const ROW_AUTOSCROLL_MAX_SPEED = 24;
   const OFFICE_COLOR_PALETTE = [
     { name: "Blue", colors: ["#deebf7", "#9dc3e6", "#5b9bd5", "#2f75b5", "#1f4e79"] },
     { name: "Orange", colors: ["#fce4d6", "#f8cbad", "#ed7d31", "#c55a11", "#843c0c"] },
@@ -24,6 +26,7 @@
   const COLOR_POOL = OFFICE_COLOR_PALETTE.map((group) => group.colors[2]);
 
   const app = document.getElementById("app");
+  let rowAutoScrollFrame = 0;
 
   const state = {
     activeTab: "gantt",
@@ -1290,6 +1293,57 @@
     return true;
   }
 
+  function updateRowDragTarget(clientY, moved) {
+    if (!state.rowDrag) return;
+    const beforeId = getRowDropBeforeId(clientY);
+    const nextMoved = Boolean(moved);
+    if (beforeId !== state.rowDrag.beforeId || nextMoved !== state.rowDrag.moved) {
+      state.rowDrag.beforeId = beforeId;
+      state.rowDrag.moved = nextMoved;
+      render();
+    }
+  }
+
+  function getRowAutoScrollVelocity(clientY) {
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportHeight) return 0;
+    if (clientY < ROW_AUTOSCROLL_EDGE) {
+      return -Math.ceil(((ROW_AUTOSCROLL_EDGE - clientY) / ROW_AUTOSCROLL_EDGE) * ROW_AUTOSCROLL_MAX_SPEED);
+    }
+    if (clientY > viewportHeight - ROW_AUTOSCROLL_EDGE) {
+      return Math.ceil(((clientY - (viewportHeight - ROW_AUTOSCROLL_EDGE)) / ROW_AUTOSCROLL_EDGE) * ROW_AUTOSCROLL_MAX_SPEED);
+    }
+    return 0;
+  }
+
+  function startRowAutoScroll() {
+    stopRowAutoScroll();
+    const tick = () => {
+      if (!state.rowDrag) {
+        rowAutoScrollFrame = 0;
+        return;
+      }
+
+      const velocity = state.rowDrag.moved ? getRowAutoScrollVelocity(state.rowDrag.clientY) : 0;
+      if (velocity) {
+        const previousScrollY = window.scrollY;
+        window.scrollBy(0, velocity);
+        if (window.scrollY !== previousScrollY) {
+          updateRowDragTarget(state.rowDrag.clientY, true);
+        }
+      }
+
+      rowAutoScrollFrame = window.requestAnimationFrame(tick);
+    };
+    rowAutoScrollFrame = window.requestAnimationFrame(tick);
+  }
+
+  function stopRowAutoScroll() {
+    if (!rowAutoScrollFrame) return;
+    window.cancelAnimationFrame(rowAutoScrollFrame);
+    rowAutoScrollFrame = 0;
+  }
+
   function handlePointerDown(event) {
     const rowDragTarget = event.target.closest("[data-row-drag]");
     if (rowDragTarget) {
@@ -1300,10 +1354,12 @@
       state.rowDrag = {
         projectId: project.id,
         startY: event.clientY,
+        clientY: event.clientY,
         beforeId: project.id,
         moved: false
       };
       document.body.classList.add("row-dragging");
+      startRowAutoScroll();
       render();
       return;
     }
@@ -1332,13 +1388,9 @@
 
   function handlePointerMove(event) {
     if (state.rowDrag) {
-      const beforeId = getRowDropBeforeId(event.clientY);
+      state.rowDrag.clientY = event.clientY;
       const moved = Math.abs(event.clientY - state.rowDrag.startY) > 3;
-      if (beforeId !== state.rowDrag.beforeId || moved !== state.rowDrag.moved) {
-        state.rowDrag.beforeId = beforeId;
-        state.rowDrag.moved = moved;
-        render();
-      }
+      updateRowDragTarget(event.clientY, moved);
       return;
     }
 
@@ -1376,6 +1428,7 @@
     if (state.rowDrag) {
       const { projectId, beforeId, moved } = state.rowDrag;
       state.rowDrag = null;
+      stopRowAutoScroll();
       document.body.classList.remove("row-dragging");
       if (moved && reorderProjectBefore(projectId, beforeId)) {
         saveLocal();
@@ -1394,6 +1447,20 @@
       saveLocal();
       showToast("Schedule updated.");
     } else {
+      render();
+    }
+  }
+
+  function handlePointerCancel() {
+    if (state.rowDrag) {
+      state.rowDrag = null;
+      stopRowAutoScroll();
+      document.body.classList.remove("row-dragging");
+      render();
+    }
+    if (state.drag) {
+      state.drag = null;
+      document.body.classList.remove("dragging");
       render();
     }
   }
@@ -1689,6 +1756,7 @@
   app.addEventListener("pointerdown", handlePointerDown);
   window.addEventListener("pointermove", handlePointerMove);
   window.addEventListener("pointerup", handlePointerUp);
+  window.addEventListener("pointercancel", handlePointerCancel);
 
   render();
 })();
