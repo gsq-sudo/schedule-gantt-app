@@ -541,7 +541,27 @@
     };
   }
 
+  function captureTimelineScroll() {
+    return {
+      gantt: document.querySelector(".gantt-scroll")?.scrollLeft || 0,
+      utilization: document.querySelector(".util-scroll")?.scrollLeft || 0
+    };
+  }
+
+  function restoreTimelineScroll(scrollPosition) {
+    if (!scrollPosition) return;
+    [
+      [".gantt-scroll", scrollPosition.gantt],
+      [".util-scroll", scrollPosition.utilization]
+    ].forEach(([selector, scrollLeft]) => {
+      const element = document.querySelector(selector);
+      if (!element) return;
+      element.scrollLeft = Math.min(scrollLeft || 0, Math.max(0, element.scrollWidth - element.clientWidth));
+    });
+  }
+
   function render() {
+    const timelineScroll = captureTimelineScroll();
     app.innerHTML = `
       <header class="topbar">
         <div class="brand">
@@ -582,6 +602,7 @@
 
     refreshIcons();
     updateFormMath(document.getElementById("project-form"));
+    restoreTimelineScroll(timelineScroll);
   }
 
   function refreshIcons() {
