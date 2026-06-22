@@ -161,6 +161,7 @@ svg {
 .chart-panel,
 .table-panel,
 .settings-panel,
+.category-panel,
 .util-panel {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -984,9 +985,52 @@ svg {
   overflow: hidden;
 }
 
+.projects-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.category-panel {
+  overflow: hidden;
+}
+
+.category-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--line);
+}
+
+.category-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 13px 17px 16px;
+}
+
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  color: #435056;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.category-chip.muted {
+  color: var(--muted);
+  background: #fbfcfc;
+}
+
 table {
   width: 100%;
-  min-width: 980px;
+  min-width: 1080px;
   border-collapse: collapse;
 }
 
@@ -1130,6 +1174,10 @@ tbody tr.archived-row {
   }
 
   .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .category-form {
     grid-template-columns: 1fr;
   }
 

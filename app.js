@@ -24,6 +24,8 @@
     week: 16,
     month: 12
   };
+  const ALL_FILTER = "all";
+  const UNCATEGORIZED_FILTER = "__uncategorized";
   const ROW_AUTOSCROLL_EDGE = 88;
   const ROW_AUTOSCROLL_MAX_SPEED = 24;
   const EDITOR_PANEL_EDGE_GAP = 16;
@@ -52,7 +54,8 @@
 
   const state = {
     activeTab: "gantt",
-    ownerFilter: "all",
+    ownerFilter: ALL_FILTER,
+    categoryFilter: ALL_FILTER,
     selectedProjectId: "",
     drag: null,
     rowDrag: null,
@@ -85,6 +88,7 @@
         timelineScale: "day",
         showArchivedOnTimeline: true
       },
+      categories: [],
       projects: []
     };
   }
@@ -109,6 +113,7 @@
         ...base.settings,
         ...(raw && raw.settings ? raw.settings : {})
       },
+      categories: Array.isArray(raw && raw.categories) ? raw.categories : [],
       projects: Array.isArray(raw && raw.projects) ? raw.projects : []
     };
 
@@ -116,6 +121,7 @@
     data.settings.timelineScale = TIMELINE_SCALES.includes(data.settings.timelineScale) ? data.settings.timelineScale : base.settings.timelineScale;
     data.settings.showArchivedOnTimeline = data.settings.showArchivedOnTimeline !== false;
     data.projects = data.projects.map((project, index) => normalizeProject(project, index));
+    data.categories = normalizeCategories([...data.categories, ...data.projects.map((project) => project.category)]);
     return data;
   }
 
@@ -136,6 +142,7 @@
       id: (project && project.id) || uid(),
       name: (project && project.name) || "Untitled project",
       owner: (project && project.owner) || "Unassigned",
+      category: normalizeCategoryName(project && project.category),
       startDate,
       endDate: safeEndDate,
       mode,
@@ -238,6 +245,21 @@
     const color = String(value || "").trim().toLowerCase();
     if (/^#[0-9a-f]{6}$/i.test(color)) return color;
     return COLOR_POOL[index % COLOR_POOL.length];
+  }
+
+  function normalizeCategoryName(value) {
+    return String(value || "").trim().replace(/\s+/g, " ");
+  }
+
+  function normalizeCategories(values) {
+    const byKey = new Map();
+    values.forEach((value) => {
+      const category = normalizeCategoryName(value);
+      if (!category) return;
+      const key = category.toLocaleLowerCase();
+      if (!byKey.has(key)) byKey.set(key, category);
+    });
+    return [...byKey.values()].sort((a, b) => a.localeCompare(b));
   }
 
   function todayInput() {
@@ -400,25 +422,51 @@
     state.data.projects.push(project);
   }
 
-  function owners() {
-    return [...new Set(state.data.projects.map((project) => project.owner || "Unassigned"))].sort((a, b) => a.localeCompare(b));
+  function owners(projects = state.data.projects) {
+    return [...new Set(projects.map((project) => project.owner || "Unassigned"))].sort((a, b) => a.localeCompare(b));
   }
 
-  function activeProjects() {
-    return state.data.projects.filter((project) => project.status !== "archived");
+  function categories() {
+    return state.data.categories;
   }
 
-  function archivedProjects() {
-    return state.data.projects.filter((project) => project.status === "archived");
+  function categoryLabel(project) {
+    return project && project.category ? project.category : "Uncategorized";
+  }
+
+  function categoryFilterLabel(filter = state.categoryFilter) {
+    if (filter === ALL_FILTER) return "All categories";
+    if (filter === UNCATEGORIZED_FILTER) return "Uncategorized";
+    return filter;
+  }
+
+  function activeProjects(projects = state.data.projects) {
+    return projects.filter((project) => project.status !== "archived");
+  }
+
+  function archivedProjects(projects = state.data.projects) {
+    return projects.filter((project) => project.status === "archived");
+  }
+
+  function projectMatchesCategory(project, filter = state.categoryFilter) {
+    if (filter === ALL_FILTER) return true;
+    if (filter === UNCATEGORIZED_FILTER) return !project.category;
+    return project.category === filter;
+  }
+
+  function utilizationOwners(projects) {
+    if (state.ownerFilter !== ALL_FILTER) return [state.ownerFilter];
+    return owners(activeProjects(projects));
   }
 
   function getVisibleProjects() {
     const timelineProjects = state.data.settings.showArchivedOnTimeline
       ? state.data.projects
       : state.data.projects.filter((project) => project.status !== "archived");
-    const projects = state.ownerFilter === "all"
-      ? timelineProjects
-      : timelineProjects.filter((project) => (project.owner || "Unassigned") === state.ownerFilter);
+    const categoryProjects = timelineProjects.filter((project) => projectMatchesCategory(project));
+    const projects = state.ownerFilter === ALL_FILTER
+      ? categoryProjects
+      : categoryProjects.filter((project) => (project.owner || "Unassigned") === state.ownerFilter);
     return sortedProjects(projects);
   }
 
@@ -468,6 +516,7 @@
       id: "",
       name: "",
       owner: "",
+      category: "",
       startDate,
       endDate,
       mode: "effort",
@@ -706,20 +755,20 @@
     return compareDates(project.startDate, date) <= 0 && compareDates(project.endDate, date) >= 0;
   }
 
-  function ownerLoadForDay(owner, date) {
+  function ownerLoadForDay(owner, date, projects = state.data.projects) {
     if (isWeekend(date)) return 0;
-    return state.data.projects.reduce((total, project) => {
+    return projects.reduce((total, project) => {
       if (project.status === "archived" || (project.owner || "Unassigned") !== owner || !projectCoversDate(project, date)) return total;
       return total + getProjectMath(project).dailyPercent;
     }, 0);
   }
 
-  function ownerLoadForPeriod(owner, period) {
-    if (period.scale === "day") return ownerLoadForDay(owner, period.startDate);
+  function ownerLoadForPeriod(owner, period, projects = state.data.projects) {
+    if (period.scale === "day") return ownerLoadForDay(owner, period.startDate, projects);
 
     const days = enumerateDays(period.startDate, period.endDate).filter((day) => !isWeekend(day));
     if (!days.length) return 0;
-    const total = days.reduce((sum, day) => sum + ownerLoadForDay(owner, day), 0);
+    const total = days.reduce((sum, day) => sum + ownerLoadForDay(owner, day, projects), 0);
     return total / days.length;
   }
 
@@ -730,8 +779,8 @@
     return "";
   }
 
-  function getLoadStats(owner, periods) {
-    const loads = periods.map((period) => ({ period, load: ownerLoadForPeriod(owner, period) }));
+  function getLoadStats(owner, periods, projects = state.data.projects) {
+    const loads = periods.map((period) => ({ period, load: ownerLoadForPeriod(owner, period, projects) }));
     const activeLoads = loads.filter((item) => item.load > 0);
     const max = loads.reduce((peak, item) => (item.load > peak.load ? item : peak), { period: null, load: 0 });
     const average = activeLoads.length
@@ -962,8 +1011,16 @@
               <label class="select-field">
                 <span>Owner</span>
                 <select id="owner-filter">
-                  <option value="all" ${state.ownerFilter === "all" ? "selected" : ""}>All owners</option>
+                  <option value="${ALL_FILTER}" ${state.ownerFilter === ALL_FILTER ? "selected" : ""}>All owners</option>
                   ${owners().map((owner) => `<option value="${escapeHtml(owner)}" ${state.ownerFilter === owner ? "selected" : ""}>${escapeHtml(owner)}</option>`).join("")}
+                </select>
+              </label>
+              <label class="select-field">
+                <span>Category</span>
+                <select id="category-filter">
+                  <option value="${ALL_FILTER}" ${state.categoryFilter === ALL_FILTER ? "selected" : ""}>All categories</option>
+                  <option value="${UNCATEGORIZED_FILTER}" ${state.categoryFilter === UNCATEGORIZED_FILTER ? "selected" : ""}>Uncategorized</option>
+                  ${categories().map((category) => `<option value="${escapeHtml(category)}" ${state.categoryFilter === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}
                 </select>
               </label>
               <label class="toggle-field" title="Show completed projects on the Gantt timeline">
@@ -981,7 +1038,7 @@
               </div>
             </div>
             ${renderGanttChart(visibleProjects, periods, totalWidth, periodWidth, scale)}
-            ${renderUtilization(periods, totalWidth, periodWidth, scale)}
+            ${renderUtilization(visibleProjects, periods, totalWidth, periodWidth, scale)}
           </section>
         </div>
       </section>
@@ -1023,6 +1080,13 @@
         <datalist id="owner-list">
           ${owners().map((owner) => `<option value="${escapeHtml(owner)}"></option>`).join("")}
         </datalist>
+        <label class="field">
+          <span>Category</span>
+          <select name="category">
+            <option value="" ${project.category ? "" : "selected"}>Uncategorized</option>
+            ${categories().map((category) => `<option value="${escapeHtml(category)}" ${project.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("")}
+          </select>
+        </label>
         <fieldset class="color-palette">
           <legend>Color</legend>
           ${renderColorPalette(project.color)}
@@ -1185,7 +1249,7 @@
           <span class="color-dot" style="background:${escapeHtml(project.color)}"></span>
           <span class="row-main">
             <strong>${escapeHtml(project.name)}</strong>
-            <small>${escapeHtml(project.owner)} · ${escapeHtml(math.dailyPercent)}%/workday ${archived ? "· archived" : ""}</small>
+            <small>${escapeHtml(project.owner)} · ${escapeHtml(categoryLabel(project))} · ${escapeHtml(math.dailyPercent)}%/workday ${archived ? "· archived" : ""}</small>
           </span>
           </button>
         </div>
@@ -1223,11 +1287,11 @@
     `;
   }
 
-  function renderUtilization(periods, totalWidth, periodWidth, scale) {
-    const activeOwners = state.ownerFilter === "all" ? owners() : [state.ownerFilter];
-    const rows = activeOwners.map((owner) => renderUtilizationRow(owner, periods)).join("");
-    const title = state.ownerFilter === "all" ? "Owner utilization" : `${state.ownerFilter} utilization`;
-    const stats = state.ownerFilter === "all" ? "" : renderOwnerStats(state.ownerFilter, periods);
+  function renderUtilization(projects, periods, totalWidth, periodWidth, scale) {
+    const activeOwners = utilizationOwners(projects);
+    const rows = activeOwners.map((owner) => renderUtilizationRow(owner, periods, projects)).join("");
+    const title = state.ownerFilter === ALL_FILTER ? "Owner utilization" : `${state.ownerFilter} utilization`;
+    const stats = state.ownerFilter === ALL_FILTER ? "" : renderOwnerStats(state.ownerFilter, periods, projects);
     return `
       <section class="util-panel">
         <div class="panel-header compact">
@@ -1246,8 +1310,8 @@
     `;
   }
 
-  function renderOwnerStats(owner, periods) {
-    const stats = getLoadStats(owner, periods);
+  function renderOwnerStats(owner, periods, projects) {
+    const stats = getLoadStats(owner, periods, projects);
     return `
       <div class="stat-cluster">
         <span>Avg ${escapeHtml(stats.average)}%</span>
@@ -1256,8 +1320,8 @@
     `;
   }
 
-  function renderUtilizationRow(owner, periods) {
-    const stats = getLoadStats(owner, periods);
+  function renderUtilizationRow(owner, periods, projects) {
+    const stats = getLoadStats(owner, periods, projects);
     return `
       <div class="util-row">
         <div class="util-owner">
@@ -1289,6 +1353,8 @@
     const projects = sortedProjects();
     return `
       <section class="view active">
+        <div class="projects-stack">
+          ${renderCategoryManager()}
         <div class="table-panel">
           <div class="panel-header">
             <div>
@@ -1306,6 +1372,7 @@
                 <tr>
                   <th>Project</th>
                   <th>Owner</th>
+                  <th>Category</th>
                   <th>Status</th>
                   <th>Dates</th>
                   <th>Effort</th>
@@ -1316,12 +1383,40 @@
               <tbody>
                 ${projects.map(renderProjectRow).join("") || `
                   <tr>
-                    <td colspan="7" class="empty-table">No projects yet.</td>
+                    <td colspan="8" class="empty-table">No projects yet.</td>
                   </tr>
                 `}
               </tbody>
             </table>
           </div>
+        </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderCategoryManager() {
+    const categoryList = categories();
+    return `
+      <section class="category-panel">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">Categories</h2>
+            <p class="panel-subtitle">${escapeHtml(categoryList.length)} saved</p>
+          </div>
+        </div>
+        <form id="category-form" class="category-form">
+          <label class="field">
+            <span>New category</span>
+            <input name="categoryName" placeholder="Launch" required />
+          </label>
+          <button class="button primary" type="submit">
+            <i data-lucide="plus"></i>
+            <span>Add</span>
+          </button>
+        </form>
+        <div class="category-list">
+          ${categoryList.map((category) => `<span class="category-chip">${escapeHtml(category)}</span>`).join("") || `<span class="category-chip muted">Uncategorized</span>`}
         </div>
       </section>
     `;
@@ -1339,6 +1434,7 @@
           </span>
         </td>
         <td>${escapeHtml(project.owner)}</td>
+        <td>${escapeHtml(categoryLabel(project))}</td>
         <td><span class="status-pill ${archived ? "archived" : "active"}">${archived ? "Archived" : "Active"}</span></td>
         <td>${escapeHtml(formatShortDate(project.startDate))} - ${escapeHtml(formatShortDate(project.endDate))}</td>
         <td>${escapeHtml(math.effortDays)} days</td>
@@ -1397,7 +1493,7 @@
             <strong>${escapeHtml(project.name)}</strong>
           </div>
           <div class="export-project-meta">
-            ${escapeHtml(project.owner)} · ${escapeHtml(exportStatusLabel(project))} · ${escapeHtml(math.effortDays)}d · ${escapeHtml(math.dailyPercent)}%/workday
+            ${escapeHtml(project.owner)} · ${escapeHtml(categoryLabel(project))} · ${escapeHtml(exportStatusLabel(project))} · ${escapeHtml(math.effortDays)}d · ${escapeHtml(math.dailyPercent)}%/workday
           </div>
         </td>
         ${segmentPeriods.map((period, index) => {
@@ -1414,6 +1510,57 @@
     `;
   }
 
+  function renderExportUtilizationSegment(projects, segmentPeriods, segmentIndex, scale) {
+    const activeOwners = utilizationOwners(projects);
+    if (!activeOwners.length) return "";
+    const startLabel = formatLongDate(segmentPeriods[0].startDate);
+    const endLabel = formatLongDate(segmentPeriods[segmentPeriods.length - 1].endDate);
+    return `
+      <section class="export-section">
+        <h2>Utilization ${escapeHtml(segmentIndex + 1)} (${escapeHtml(timelineScaleLabel(scale))}): ${escapeHtml(startLabel)} - ${escapeHtml(endLabel)}</h2>
+        <table class="export-utilization scale-${escapeHtml(scale)}">
+          <thead>
+            <tr>
+              <th class="project-col">Owner</th>
+              ${segmentPeriods.map((period, index) => `
+                <th class="${escapeHtml(period.scale)}-scale ${period.scale === "day" && isWeekend(period.startDate) ? "weekend" : ""}" title="${escapeHtml(formatPeriodRange(period))}">
+                  <span>${escapeHtml(formatPeriodSecondary(period, index))}</span>
+                  <strong>${escapeHtml(formatPeriodPrimary(period))}</strong>
+                </th>
+              `).join("")}
+            </tr>
+          </thead>
+          <tbody>
+            ${activeOwners.map((owner) => renderExportUtilizationRow(owner, segmentPeriods, projects)).join("")}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function renderExportUtilizationRow(owner, segmentPeriods, projects) {
+    const stats = getLoadStats(owner, segmentPeriods, projects);
+    return `
+      <tr>
+        <td class="project-col">
+          <strong>${escapeHtml(owner)}</strong>
+          <div class="export-project-meta">Peak ${escapeHtml(roundTo(stats.max.load, 1))}%</div>
+        </td>
+        ${stats.loads.map((item) => {
+          const level = Math.min(100, Math.max(0, item.load));
+          return `
+            <td class="${loadClass(item.load)} ${escapeHtml(item.period.scale)}-scale ${item.period.scale === "day" && isWeekend(item.period.startDate) ? "weekend" : ""}" title="${escapeHtml(formatPeriodRange(item.period))}: ${escapeHtml(roundTo(item.load, 1))}%">
+              <span class="export-load-bar">
+                <i style="height:${escapeHtml(level)}%"></i>
+                <em>${item.load > 0 ? escapeHtml(roundTo(item.load, 0)) : ""}</em>
+              </span>
+            </td>
+          `;
+        }).join("")}
+      </tr>
+    `;
+  }
+
   function renderExportProjectTable(projects) {
     return `
       <section class="export-section project-list-section">
@@ -1423,6 +1570,7 @@
             <tr>
               <th>Project</th>
               <th>Owner</th>
+              <th>Category</th>
               <th>Status</th>
               <th>Start</th>
               <th>End</th>
@@ -1442,6 +1590,7 @@
                     <span class="export-project-list-name">${escapeHtml(project.name)}</span>
                   </td>
                   <td>${escapeHtml(project.owner)}</td>
+                  <td>${escapeHtml(categoryLabel(project))}</td>
                   <td>${escapeHtml(exportStatusLabel(project))}</td>
                   <td>${escapeHtml(formatLongDate(project.startDate))}</td>
                   <td>${escapeHtml(formatLongDate(project.endDate))}</td>
@@ -1460,14 +1609,16 @@
   }
 
   function buildPdfReportHtml() {
-    const projects = sortedProjects(state.data.projects);
+    const projects = getVisibleProjects();
     const range = getTimelineRange(projects);
     const scale = timelineScale();
     const periods = buildTimelinePeriods(range.startDate, range.endDate, scale);
     const periodSegments = chunkDays(periods, timelineExportSegmentSize(scale));
     const generatedAt = new Date();
     const reportTitle = "Schedule Gantt Report";
-    const ownerList = owners().join(", ") || "None";
+    const ownerList = owners(projects).join(", ") || (state.ownerFilter === ALL_FILTER ? "None" : state.ownerFilter);
+    const ownerFilterLabel = state.ownerFilter === ALL_FILTER ? "All owners" : state.ownerFilter;
+    const categoryFilterText = categoryFilterLabel();
 
     return `<!doctype html>
       <html lang="en">
@@ -1609,7 +1760,8 @@
               border-radius: 999px;
               vertical-align: middle;
             }
-            .export-gantt td:not(.project-col) {
+            .export-gantt td:not(.project-col),
+            .export-utilization td:not(.project-col) {
               height: 24px;
               padding: 0;
               text-align: center;
@@ -1644,6 +1796,41 @@
               border-style: dashed;
               background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,0.28) 0 4px, rgba(255,255,255,0) 4px 8px);
             }
+            .export-load-bar {
+              position: relative;
+              display: block;
+              height: 24px;
+              margin: 2px;
+              background: #fbfcfc;
+              border: 1px solid #d9e1df;
+              border-radius: 3px;
+              overflow: hidden;
+            }
+            .export-load-bar i {
+              position: absolute;
+              left: 24%;
+              right: 24%;
+              bottom: 0;
+              display: block;
+              background: #b8ded7;
+              border-radius: 3px 3px 0 0;
+            }
+            .export-utilization td.high .export-load-bar i {
+              background: #f2bf63;
+            }
+            .export-utilization td.over .export-load-bar i {
+              background: #dc2626;
+            }
+            .export-load-bar em {
+              position: relative;
+              z-index: 1;
+              display: block;
+              padding-top: 2px;
+              color: #405057;
+              font-size: 7px;
+              font-style: normal;
+              font-weight: 800;
+            }
             .weekend {
               background-color: #f3f4f6;
             }
@@ -1653,8 +1840,8 @@
               text-align: left;
               overflow-wrap: anywhere;
             }
-            .export-projects th:nth-child(1) { width: 18%; }
-            .export-projects th:nth-child(10) { width: 18%; }
+            .export-projects th:nth-child(1) { width: 16%; }
+            .export-projects th:nth-child(11) { width: 16%; }
             .export-project-title-cell {
               box-shadow: inset 3px 0 0 var(--project-color);
             }
@@ -1686,14 +1873,14 @@
             </header>
             <section class="summary">
               <div><span>Projects</span><strong>${escapeHtml(projects.length)}</strong></div>
-              <div><span>Active</span><strong>${escapeHtml(activeProjects().length)}</strong></div>
-              <div><span>Archived</span><strong>${escapeHtml(archivedProjects().length)}</strong></div>
-              <div><span>Owners</span><strong>${escapeHtml(owners().length)}</strong></div>
+              <div><span>Active</span><strong>${escapeHtml(activeProjects(projects).length)}</strong></div>
+              <div><span>Archived</span><strong>${escapeHtml(archivedProjects(projects).length)}</strong></div>
+              <div><span>Owners</span><strong>${escapeHtml(owners(projects).length)}</strong></div>
               <div><span>Zoom</span><strong>${escapeHtml(timelineScaleLabel(scale))}</strong></div>
               <div><span>Timeline</span><strong>${escapeHtml(formatShortDate(range.startDate))} - ${escapeHtml(formatShortDate(range.endDate))}</strong></div>
             </section>
-            <p class="owners"><strong>Owners:</strong> ${escapeHtml(ownerList)}</p>
-            ${projects.length ? periodSegments.map((segment, index) => renderExportGanttSegment(projects, segment, index, scale)).join("") : "<p>No projects to export.</p>"}
+            <p class="owners"><strong>Owner filter:</strong> ${escapeHtml(ownerFilterLabel)} · <strong>Category filter:</strong> ${escapeHtml(categoryFilterText)} · <strong>Owners shown:</strong> ${escapeHtml(ownerList)}</p>
+            ${projects.length ? periodSegments.map((segment, index) => `${renderExportGanttSegment(projects, segment, index, scale)}${renderExportUtilizationSegment(projects, segment, index, scale)}`).join("") : "<p>No projects to export.</p>"}
             ${renderExportProjectTable(projects)}
           </main>
           <script>
@@ -1779,6 +1966,29 @@
       event.preventDefault();
       saveClientId(event);
     }
+    if (event.target.id === "category-form") {
+      event.preventDefault();
+      saveCategoryFromForm(event.target);
+    }
+  }
+
+  function saveCategoryFromForm(form) {
+    const formData = new FormData(form);
+    const category = normalizeCategoryName(formData.get("categoryName"));
+    if (!category) {
+      showToast("Enter a category name.");
+      return;
+    }
+    const existing = categories().find((candidate) => candidate.toLocaleLowerCase() === category.toLocaleLowerCase());
+    if (existing) {
+      showToast("Category already exists.");
+      form.reset();
+      return;
+    }
+    state.data.categories = normalizeCategories([...state.data.categories, category]);
+    form.reset();
+    saveLocal();
+    showToast("Category added.");
   }
 
   function saveProjectFromForm(form) {
@@ -1796,6 +2006,7 @@
 
     project.name = String(formData.get("name") || "Untitled project").trim() || "Untitled project";
     project.owner = String(formData.get("owner") || "Unassigned").trim() || "Unassigned";
+    project.category = normalizeCategoryName(formData.get("category"));
     project.startDate = String(formData.get("startDate") || todayInput());
     project.endDate = String(formData.get("endDate") || project.startDate);
     project.mode = formData.get("mode") === "allocation" ? "allocation" : "effort";
@@ -1804,6 +2015,7 @@
     project.dependencies = dependencies;
     project.notes = String(formData.get("notes") || "").trim();
     project.color = normalizeColor(formData.get("color") || project.color, state.data.projects.length);
+    state.data.categories = normalizeCategories([...state.data.categories, project.category]);
     project.updatedAt = new Date().toISOString();
     sanitizeProjectDates(project);
     if (project.mode === "allocation") {
@@ -1915,6 +2127,12 @@
   function handleChange(event) {
     if (event.target.id === "owner-filter") {
       state.ownerFilter = event.target.value;
+      render();
+      return;
+    }
+
+    if (event.target.id === "category-filter") {
+      state.categoryFilter = event.target.value;
       render();
       return;
     }
